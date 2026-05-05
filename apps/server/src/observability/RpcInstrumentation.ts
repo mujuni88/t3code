@@ -11,7 +11,6 @@ const DEFAULT_RPC_SPAN_ATTRIBUTES = {
 const RPC_METHODS_WITH_TRACING_DISABLED = new Set([
   "server.getTraceDiagnostics",
   "server.getProcessDiagnostics",
-  "server.signalProcess",
 ]);
 
 function shouldTraceRpc(method: string): boolean {
