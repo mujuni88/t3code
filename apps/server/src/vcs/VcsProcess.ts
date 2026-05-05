@@ -2,16 +2,13 @@ import { Duration, Context, Effect, Layer, Option, PlatformError, Sink, Stream }
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
-  collectUint8StreamText,
-  type CollectedUint8StreamText,
-} from "../stream/collectUint8StreamText.ts";
-import {
   VcsOutputDecodeError,
   type VcsError,
   VcsProcessExitError,
   VcsProcessSpawnError,
   VcsProcessTimeoutError,
 } from "@t3tools/contracts";
+import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
 export interface VcsProcessInput {
   readonly operation: string;
@@ -34,7 +31,10 @@ export interface VcsProcessOutput {
   readonly stderrTruncated: boolean;
 }
 
-export type VcsProcessCollectedText = CollectedUint8StreamText;
+export interface VcsProcessCollectedText {
+  readonly text: string;
+  readonly truncated: boolean;
+}
 
 export interface VcsProcessHandle {
   readonly pid: ChildProcessSpawner.ProcessId;
@@ -59,6 +59,7 @@ export class VcsProcess extends Context.Service<VcsProcess, VcsProcessShape>()(
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 
 function commandLabel(command: string, args: ReadonlyArray<string>): string {
   return [command, ...args].join(" ");
@@ -77,6 +78,22 @@ function outputDecodeError(
     cause,
   });
 }
+
+export const collectText = Effect.fn("VcsProcess.collectText")(function* (input: {
+  readonly operation: string;
+  readonly command: string;
+  readonly cwd: string;
+  readonly stream: Stream.Stream<Uint8Array, VcsError>;
+  readonly maxOutputBytes?: number;
+  readonly truncateOutputAtMaxBytes?: boolean;
+}) {
+  const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  return yield* collectUint8StreamText({
+    stream: input.stream,
+    maxBytes: maxOutputBytes,
+    truncatedMarker: input.truncateOutputAtMaxBytes ? OUTPUT_TRUNCATED_MARKER : null,
+  });
+});
 
 export const make = Effect.fn("makeVcsProcess")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -143,15 +160,21 @@ export const make = Effect.fn("makeVcsProcess")(function* () {
       const [stdout, stderr, exitCode] = yield* withProcess(input, (child) =>
         Effect.all(
           [
-            collectUint8StreamText({
+            collectText({
+              operation: input.operation,
+              command: label,
+              cwd: input.cwd,
               stream: child.stdout,
-              maxBytes: maxOutputBytes,
-              truncatedMarker: input.truncateOutputAtMaxBytes ? "\n\n[truncated]" : null,
+              maxOutputBytes,
+              truncateOutputAtMaxBytes: input.truncateOutputAtMaxBytes ?? false,
             }),
-            collectUint8StreamText({
+            collectText({
+              operation: input.operation,
+              command: label,
+              cwd: input.cwd,
               stream: child.stderr,
-              maxBytes: maxOutputBytes,
-              truncatedMarker: input.truncateOutputAtMaxBytes ? "\n\n[truncated]" : null,
+              maxOutputBytes,
+              truncateOutputAtMaxBytes: input.truncateOutputAtMaxBytes ?? false,
             }),
             child.exitCode,
             input.stdin === undefined ? Effect.void : child.writeStdin(input.stdin),
