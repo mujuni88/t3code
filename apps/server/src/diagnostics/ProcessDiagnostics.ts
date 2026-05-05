@@ -5,11 +5,14 @@ import type {
   ServerSignalProcessResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
 interface ProcessRow {
   readonly pid: number;
@@ -259,36 +262,84 @@ function makeResult(input: {
   };
 }
 
-function readPosixProcessRows(
-  vcsProcess: VcsProcess.VcsProcessShape,
-): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
-  return vcsProcess
-    .run({
-      operation: "ProcessDiagnostics.readPosixProcessRows",
-      command: "ps",
-      args: ["-axo", POSIX_PROCESS_QUERY_COMMAND],
-      cwd: process.cwd(),
-      timeoutMs: PROCESS_QUERY_TIMEOUT_MS,
-      allowNonZeroExit: true,
-      maxOutputBytes: PROCESS_QUERY_MAX_OUTPUT_BYTES,
-      truncateOutputAtMaxBytes: true,
-    })
-    .pipe(
-      Effect.flatMap((result) =>
-        result.exitCode !== 0
-          ? Effect.fail(toProcessDiagnosticsError(result.stderr.trim() || "ps failed."))
-          : Effect.succeed(parsePosixProcessRows(result.stdout)),
-      ),
-      Effect.mapError((cause) =>
-        Schema.is(ProcessDiagnosticsError)(cause)
-          ? cause
-          : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
-      ),
+interface ProcessOutput {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+function runProcess(
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  input: {
+    readonly command: string;
+    readonly args: ReadonlyArray<string>;
+    readonly errorMessage: string;
+  },
+): Effect.Effect<ProcessOutput, ProcessDiagnosticsError> {
+  return Effect.gen(function* () {
+    const child = yield* spawner.spawn(
+      ChildProcess.make(input.command, input.args, {
+        cwd: process.cwd(),
+        shell: process.platform === "win32",
+      }),
     );
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        collectUint8StreamText({
+          stream: child.stdout,
+          maxBytes: PROCESS_QUERY_MAX_OUTPUT_BYTES,
+          truncatedMarker: "\n\n[truncated]",
+        }),
+        collectUint8StreamText({
+          stream: child.stderr,
+          maxBytes: PROCESS_QUERY_MAX_OUTPUT_BYTES,
+          truncatedMarker: "\n\n[truncated]",
+        }),
+        child.exitCode.pipe(Effect.map(Number)),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    return {
+      exitCode,
+      stdout: stdout.text,
+      stderr: stderr.text,
+    } satisfies ProcessOutput;
+  }).pipe(
+    Effect.scoped,
+    Effect.timeoutOption(Duration.millis(PROCESS_QUERY_TIMEOUT_MS)),
+    Effect.flatMap((result) =>
+      Option.match(result, {
+        onNone: () => Effect.fail(toProcessDiagnosticsError(`${input.errorMessage} timed out.`)),
+        onSome: Effect.succeed,
+      }),
+    ),
+    Effect.mapError((cause) =>
+      Schema.is(ProcessDiagnosticsError)(cause)
+        ? cause
+        : toProcessDiagnosticsError(input.errorMessage, cause),
+    ),
+  );
+}
+
+function readPosixProcessRows(
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
+  return runProcess(spawner, {
+    command: "ps",
+    args: ["-axo", POSIX_PROCESS_QUERY_COMMAND],
+    errorMessage: "Failed to query process diagnostics.",
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode !== 0
+        ? Effect.fail(toProcessDiagnosticsError(result.stderr.trim() || "ps failed."))
+        : Effect.succeed(parsePosixProcessRows(result.stdout)),
+    ),
+  );
 }
 
 function readWindowsProcessRows(
-  vcsProcess: VcsProcess.VcsProcessShape,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
 ): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
   const command = [
     "$processes = Get-CimInstance Win32_Process | ForEach-Object {",
@@ -298,39 +349,27 @@ function readWindowsProcessRows(
     "$processes | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
 
-  return vcsProcess
-    .run({
-      operation: "ProcessDiagnostics.readWindowsProcessRows",
-      command: "powershell.exe",
-      args: ["-NoProfile", "-NonInteractive", "-Command", command],
-      cwd: process.cwd(),
-      timeoutMs: PROCESS_QUERY_TIMEOUT_MS,
-      allowNonZeroExit: true,
-      maxOutputBytes: PROCESS_QUERY_MAX_OUTPUT_BYTES,
-      truncateOutputAtMaxBytes: true,
-    })
-    .pipe(
-      Effect.flatMap((result) =>
-        result.exitCode !== 0
-          ? Effect.fail(
-              toProcessDiagnosticsError(result.stderr.trim() || "PowerShell process query failed."),
-            )
-          : Effect.succeed(parseWindowsProcessRows(result.stdout)),
-      ),
-      Effect.mapError((cause) =>
-        Schema.is(ProcessDiagnosticsError)(cause)
-          ? cause
-          : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
-      ),
-    );
+  return runProcess(spawner, {
+    command: "powershell.exe",
+    args: ["-NoProfile", "-NonInteractive", "-Command", command],
+    errorMessage: "Failed to query process diagnostics.",
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode !== 0
+        ? Effect.fail(
+            toProcessDiagnosticsError(result.stderr.trim() || "PowerShell process query failed."),
+          )
+        : Effect.succeed(parseWindowsProcessRows(result.stdout)),
+    ),
+  );
 }
 
 function readProcessRows(
-  vcsProcess: VcsProcess.VcsProcessShape,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
 ): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
   return process.platform === "win32"
-    ? readWindowsProcessRows(vcsProcess)
-    : readPosixProcessRows(vcsProcess);
+    ? readWindowsProcessRows(spawner)
+    : readPosixProcessRows(spawner);
 }
 
 export function aggregateProcessDiagnostics(input: {
@@ -342,14 +381,14 @@ export function aggregateProcessDiagnostics(input: {
 }
 
 function assertDescendantPid(
-  vcsProcess: VcsProcess.VcsProcessShape,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   pid: number,
 ): Effect.Effect<void, ProcessDiagnosticsError> {
   if (pid === process.pid) {
     return Effect.fail(toProcessDiagnosticsError("Refusing to signal the T3 server process."));
   }
 
-  return readProcessRows(vcsProcess).pipe(
+  return readProcessRows(spawner).pipe(
     Effect.flatMap((rows) => {
       const descendant = buildDescendantEntries(rows, process.pid).some(
         (entry) => entry.pid === pid,
@@ -364,9 +403,9 @@ function assertDescendantPid(
 }
 
 export const make = Effect.fn("makeProcessDiagnostics")(function* () {
-  const vcsProcess = yield* VcsProcess.VcsProcess;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-  const read: ProcessDiagnosticsShape["read"] = readProcessRows(vcsProcess).pipe(
+  const read: ProcessDiagnosticsShape["read"] = readProcessRows(spawner).pipe(
     Effect.map((rows) => makeResult({ serverPid: process.pid, rows })),
     Effect.catch((error: ProcessDiagnosticsError) =>
       Effect.succeed(makeResult({ serverPid: process.pid, rows: [], error: error.message })),
@@ -375,7 +414,7 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
 
   const signal: ProcessDiagnosticsShape["signal"] = Effect.fn("ProcessDiagnostics.signal")(
     function* (input) {
-      return yield* assertDescendantPid(vcsProcess, input.pid).pipe(
+      return yield* assertDescendantPid(spawner, input.pid).pipe(
         Effect.flatMap(() =>
           Effect.try({
             try: () => {

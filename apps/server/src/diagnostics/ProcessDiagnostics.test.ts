@@ -1,18 +1,33 @@
-import { describe, expect, it, vi } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
-import * as VcsProcess from "../vcs/VcsProcess.ts";
 
-const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
-  exitCode: ChildProcessSpawner.ExitCode(0),
-  stdout,
-  stderr: "",
-  stdoutTruncated: false,
-  stderrTruncated: false,
-});
+const encoder = new TextEncoder();
+
+function mockHandle(result: {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly code?: number;
+}) {
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.code ?? 0)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.void,
+    unref: Effect.succeed(Effect.void),
+    stdin: Sink.drain,
+    stdout: Stream.make(encoder.encode(result.stdout ?? "")),
+    stderr: Stream.make(encoder.encode(result.stderr ?? "")),
+    all: Stream.empty,
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+  });
+}
 
 describe("ProcessDiagnostics", () => {
   it.effect("parses POSIX ps rows with full commands", () =>
@@ -161,38 +176,41 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it.effect("queries processes through the VcsProcess service", () =>
+  it.effect("queries processes through the ChildProcessSpawner service", () =>
     Effect.gen(function* () {
-      const run = vi.fn<VcsProcess.VcsProcessShape["run"]>();
-      run.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            [
-              ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
-              ` 4242 ${process.pid} ${process.pid} S  1.5 2048 00:04 agent`,
-            ].join("\n"),
-          ),
-        ),
+      const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+        [];
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as {
+            readonly command: string;
+            readonly args: ReadonlyArray<string>;
+          };
+          commands.push({ command: childProcess.command, args: childProcess.args });
+          return Effect.succeed(
+            mockHandle({
+              stdout: [
+                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
+                ` 4242 ${process.pid} ${process.pid} S  1.5 2048 00:04 agent`,
+              ].join("\n"),
+            }),
+          );
+        }),
       );
-      const layer = ProcessDiagnostics.layer.pipe(
-        Layer.provide(Layer.mock(VcsProcess.VcsProcess)({ run })),
-      );
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
 
       const diagnostics = yield* ProcessDiagnostics.readProcessDiagnostics().pipe(
         Effect.provide(layer),
       );
 
       expect(diagnostics.processes.map((process) => process.pid)).toEqual([4242]);
-      expect(run).toHaveBeenCalledWith({
-        operation: "ProcessDiagnostics.readPosixProcessRows",
-        command: "ps",
-        args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command="],
-        cwd: process.cwd(),
-        timeoutMs: 1_000,
-        allowNonZeroExit: true,
-        maxOutputBytes: 2 * 1024 * 1024,
-        truncateOutputAtMaxBytes: true,
-      });
+      expect(commands).toEqual([
+        {
+          command: "ps",
+          args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command="],
+        },
+      ]);
     }),
   );
 });

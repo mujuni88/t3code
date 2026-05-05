@@ -2,6 +2,10 @@ import { Duration, Context, Effect, Layer, Option, PlatformError, Sink, Stream }
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
+  collectUint8StreamText,
+  type CollectedUint8StreamText,
+} from "../stream/collectUint8StreamText.ts";
+import {
   VcsOutputDecodeError,
   type VcsError,
   VcsProcessExitError,
@@ -30,10 +34,7 @@ export interface VcsProcessOutput {
   readonly stderrTruncated: boolean;
 }
 
-export interface VcsProcessCollectedText {
-  readonly text: string;
-  readonly truncated: boolean;
-}
+export type VcsProcessCollectedText = CollectedUint8StreamText;
 
 export interface VcsProcessHandle {
   readonly pid: ChildProcessSpawner.ProcessId;
@@ -58,7 +59,6 @@ export class VcsProcess extends Context.Service<VcsProcess, VcsProcessShape>()(
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
-const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 
 function commandLabel(command: string, args: ReadonlyArray<string>): string {
   return [command, ...args].join(" ");
@@ -77,54 +77,6 @@ function outputDecodeError(
     cause,
   });
 }
-
-export const collectText = Effect.fn("VcsProcess.collectText")(function* (input: {
-  readonly operation: string;
-  readonly command: string;
-  readonly cwd: string;
-  readonly stream: Stream.Stream<Uint8Array, VcsError>;
-  readonly maxOutputBytes?: number;
-  readonly truncateOutputAtMaxBytes?: boolean;
-}) {
-  const decoder = new TextDecoder();
-  let text = "";
-  let bytes = 0;
-  let truncated = false;
-  const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  const truncateOutputAtMaxBytes = input.truncateOutputAtMaxBytes ?? false;
-
-  yield* Stream.runForEach(input.stream, (chunk) =>
-    Effect.sync(() => {
-      if (truncated) return;
-
-      const remainingBytes = maxOutputBytes - bytes;
-      if (remainingBytes <= 0) {
-        truncated = true;
-        if (truncateOutputAtMaxBytes) {
-          text += OUTPUT_TRUNCATED_MARKER;
-        }
-        return;
-      }
-
-      const nextChunk = chunk.byteLength > remainingBytes ? chunk.slice(0, remainingBytes) : chunk;
-      text += decoder.decode(nextChunk, { stream: true });
-      bytes += nextChunk.byteLength;
-
-      if (chunk.byteLength > remainingBytes) {
-        truncated = true;
-        if (truncateOutputAtMaxBytes) {
-          text += OUTPUT_TRUNCATED_MARKER;
-        }
-      }
-    }),
-  );
-
-  if (!truncated) {
-    text += decoder.decode();
-  }
-
-  return { text, truncated } satisfies VcsProcessCollectedText;
-});
 
 export const make = Effect.fn("makeVcsProcess")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -191,21 +143,15 @@ export const make = Effect.fn("makeVcsProcess")(function* () {
       const [stdout, stderr, exitCode] = yield* withProcess(input, (child) =>
         Effect.all(
           [
-            collectText({
-              operation: input.operation,
-              command: label,
-              cwd: input.cwd,
+            collectUint8StreamText({
               stream: child.stdout,
-              maxOutputBytes,
-              truncateOutputAtMaxBytes: input.truncateOutputAtMaxBytes ?? false,
+              maxBytes: maxOutputBytes,
+              truncatedMarker: input.truncateOutputAtMaxBytes ? "\n\n[truncated]" : null,
             }),
-            collectText({
-              operation: input.operation,
-              command: label,
-              cwd: input.cwd,
+            collectUint8StreamText({
               stream: child.stderr,
-              maxOutputBytes,
-              truncateOutputAtMaxBytes: input.truncateOutputAtMaxBytes ?? false,
+              maxBytes: maxOutputBytes,
+              truncatedMarker: input.truncateOutputAtMaxBytes ? "\n\n[truncated]" : null,
             }),
             child.exitCode,
             input.stdin === undefined ? Effect.void : child.writeStdin(input.stdin),
