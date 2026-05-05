@@ -351,7 +351,8 @@ function assertDescendantPid(
 
   return readProcessRows(vcsProcess).pipe(
     Effect.flatMap((rows) => {
-      const descendant = buildDescendantEntries(rows, process.pid).some(
+      const filtered = rows.filter((row) => !isDiagnosticsQueryProcess(row, process.pid));
+      const descendant = buildDescendantEntries(filtered, process.pid).some(
         (entry) => entry.pid === pid,
       );
       return descendant

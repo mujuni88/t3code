@@ -247,7 +247,14 @@ export function aggregateTraceDiagnostics(
       if (durationMs >= slowSpanThresholdMs) {
         slowSpanCount += 1;
       }
-      slowestSpans.push(spanItem);
+      if (
+        slowestSpans.length < TOP_LIMIT ||
+        durationMs > slowestSpans[slowestSpans.length - 1]!.durationMs
+      ) {
+        slowestSpans.push(spanItem);
+        slowestSpans.sort((left, right) => right.durationMs - left.durationMs);
+        if (slowestSpans.length > TOP_LIMIT) slowestSpans.length = TOP_LIMIT;
+      }
 
       if (isFailure) {
         const cause = readExitCause(parsed.exit);
@@ -331,9 +338,7 @@ export function aggregateTraceDiagnostics(
     slowSpanCount,
     logLevelCounts,
     topSpansByCount,
-    slowestSpans: slowestSpans
-      .toSorted((left, right) => right.durationMs - left.durationMs)
-      .slice(0, TOP_LIMIT),
+    slowestSpans,
     commonFailures: [...failuresByKey.values()]
       .toSorted(
         (left, right) =>
