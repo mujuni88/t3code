@@ -202,7 +202,7 @@ function buildDescendantEntries(
       childPids: children.map((child) => child.pid),
     });
 
-    stack.unshift(...children.map((row) => ({ row, depth: item.depth + 1 })).toReversed());
+    stack.unshift(...children.map((row) => ({ row, depth: item.depth + 1 })));
   }
 
   return entries;

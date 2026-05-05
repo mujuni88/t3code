@@ -347,6 +347,7 @@ export function readTraceDiagnostics(
             : null;
         if (code !== "ENOENT") {
           readFailure = error instanceof Error ? error.message : String(error);
+          break;
         }
       }
     }
