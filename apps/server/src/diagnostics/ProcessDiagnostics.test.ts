@@ -200,7 +200,8 @@ describe("ProcessDiagnostics", () => {
       );
       const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
 
-      const diagnostics = yield* ProcessDiagnostics.readProcessDiagnostics().pipe(
+      const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((pd) => pd.read),
         Effect.provide(layer),
       );
 
@@ -231,10 +232,10 @@ describe("ProcessDiagnostics", () => {
       );
       const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
 
-      const result = yield* ProcessDiagnostics.signalProcess({
-        pid: 4242,
-        signal: "SIGINT",
-      }).pipe(Effect.provide(layer));
+      const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((pd) => pd.signal({ pid: 4242, signal: "SIGINT" })),
+        Effect.provide(layer),
+      );
 
       expect(result).toEqual({
         pid: 4242,
