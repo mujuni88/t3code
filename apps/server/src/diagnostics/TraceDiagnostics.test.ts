@@ -1,6 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 
-import { aggregateTraceDiagnostics } from "./TraceDiagnostics.ts";
+import * as TraceDiagnostics from "./TraceDiagnostics.ts";
 
 function ns(ms: number): string {
   return String(BigInt(ms) * 1_000_000n);
@@ -33,126 +37,171 @@ function record(input: {
 }
 
 describe("TraceDiagnostics", () => {
-  it("aggregates failures, slow spans, log levels, and parse errors", () => {
-    const diagnostics = aggregateTraceDiagnostics({
-      traceFilePath: "/tmp/server.trace.ndjson",
-      readAt: new Date("2026-05-05T10:00:00.000Z"),
-      slowSpanThresholdMs: 1_000,
-      files: [
-        {
-          path: "/tmp/server.trace.ndjson.1",
-          text: [
-            record({
-              name: "server.getConfig",
-              traceId: "trace-a",
-              spanId: "span-a",
+  it.effect("aggregates failures, slow spans, log levels, and parse errors", () =>
+    Effect.sync(() => {
+      const diagnostics = TraceDiagnostics.aggregateTraceDiagnostics({
+        traceFilePath: "/tmp/server.trace.ndjson",
+        readAt: new Date("2026-05-05T10:00:00.000Z"),
+        slowSpanThresholdMs: 1_000,
+        files: [
+          {
+            path: "/tmp/server.trace.ndjson.1",
+            text: [
+              record({
+                name: "server.getConfig",
+                traceId: "trace-a",
+                spanId: "span-a",
+                startMs: 1_000,
+                durationMs: 50,
+              }),
+              "not-json",
+            ].join("\n"),
+          },
+          {
+            path: "/tmp/server.trace.ndjson",
+            text: [
+              record({
+                name: "orchestration.dispatch",
+                traceId: "trace-b",
+                spanId: "span-b",
+                startMs: 2_000,
+                durationMs: 1_500,
+                exit: { _tag: "Failure", cause: "Provider crashed" },
+                events: [
+                  {
+                    name: "provider failed",
+                    timeUnixNano: ns(3_400),
+                    attributes: { "effect.logLevel": "Error" },
+                  },
+                ],
+              }),
+              record({
+                name: "orchestration.dispatch",
+                traceId: "trace-c",
+                spanId: "span-c",
+                startMs: 4_000,
+                durationMs: 250,
+                exit: { _tag: "Failure", cause: "Provider crashed" },
+              }),
+              record({
+                name: "git.status",
+                traceId: "trace-d",
+                spanId: "span-d",
+                startMs: 5_000,
+                durationMs: 25,
+                exit: { _tag: "Interrupted", cause: "Interrupted" },
+                events: [
+                  {
+                    name: "status delayed",
+                    timeUnixNano: ns(5_010),
+                    attributes: { "effect.logLevel": "Warning" },
+                  },
+                ],
+              }),
+            ].join("\n"),
+          },
+        ],
+      });
+
+      assert.equal(diagnostics.recordCount, 4);
+      assert.equal(diagnostics.parseErrorCount, 1);
+      assert.equal(diagnostics.failureCount, 2);
+      assert.equal(diagnostics.interruptionCount, 1);
+      assert.equal(diagnostics.slowSpanCount, 1);
+      assert.equal(diagnostics.logLevelCounts.Error, 1);
+      assert.equal(diagnostics.logLevelCounts.Warning, 1);
+      assert.equal(diagnostics.commonFailures[0]?.name, "orchestration.dispatch");
+      assert.equal(diagnostics.commonFailures[0]?.count, 2);
+      assert.equal(diagnostics.latestFailures[0]?.traceId, "trace-c");
+      assert.equal(diagnostics.slowestSpans[0]?.traceId, "trace-b");
+      assert.equal(diagnostics.latestWarningAndErrorLogs[0]?.message, "status delayed");
+      assert.equal(diagnostics.topSpansByCount[0]?.name, "orchestration.dispatch");
+    }),
+  );
+
+  it.effect("returns a not-found diagnostic when no files are available", () =>
+    Effect.sync(() => {
+      const diagnostics = TraceDiagnostics.aggregateTraceDiagnostics({
+        traceFilePath: "/tmp/missing.trace.ndjson",
+        readAt: new Date("2026-05-05T10:00:00.000Z"),
+        files: [],
+      });
+
+      assert.equal(diagnostics.recordCount, 0);
+      assert.equal(diagnostics.error?.kind, "trace-file-not-found");
+    }),
+  );
+
+  it.effect("preserves full failure causes and log messages", () =>
+    Effect.sync(() => {
+      const longCause = `VcsProcessSpawnError: ${"missing executable ".repeat(80)}`.trim();
+      const longMessage = `provider warning: ${"retrying command ".repeat(80)}`.trim();
+      const diagnostics = TraceDiagnostics.aggregateTraceDiagnostics({
+        traceFilePath: "/tmp/server.trace.ndjson",
+        files: [
+          {
+            path: "/tmp/server.trace.ndjson",
+            text: record({
+              name: "VcsProcess.run",
+              traceId: "trace-long",
+              spanId: "span-long",
               startMs: 1_000,
-              durationMs: 50,
-            }),
-            "not-json",
-          ].join("\n"),
-        },
-        {
-          path: "/tmp/server.trace.ndjson",
-          text: [
-            record({
-              name: "orchestration.dispatch",
-              traceId: "trace-b",
-              spanId: "span-b",
-              startMs: 2_000,
-              durationMs: 1_500,
-              exit: { _tag: "Failure", cause: "Provider crashed" },
-              events: [
-                {
-                  name: "provider failed",
-                  timeUnixNano: ns(3_400),
-                  attributes: { "effect.logLevel": "Error" },
-                },
-              ],
-            }),
-            record({
-              name: "orchestration.dispatch",
-              traceId: "trace-c",
-              spanId: "span-c",
-              startMs: 4_000,
-              durationMs: 250,
-              exit: { _tag: "Failure", cause: "Provider crashed" },
-            }),
-            record({
-              name: "git.status",
-              traceId: "trace-d",
-              spanId: "span-d",
-              startMs: 5_000,
               durationMs: 25,
-              exit: { _tag: "Interrupted", cause: "Interrupted" },
+              exit: { _tag: "Failure", cause: longCause },
               events: [
                 {
-                  name: "status delayed",
-                  timeUnixNano: ns(5_010),
+                  name: longMessage,
+                  timeUnixNano: ns(1_010),
                   attributes: { "effect.logLevel": "Warning" },
                 },
               ],
             }),
-          ].join("\n"),
-        },
-      ],
-    });
+          },
+        ],
+      });
 
-    assert.equal(diagnostics.recordCount, 4);
-    assert.equal(diagnostics.parseErrorCount, 1);
-    assert.equal(diagnostics.failureCount, 2);
-    assert.equal(diagnostics.interruptionCount, 1);
-    assert.equal(diagnostics.slowSpanCount, 1);
-    assert.equal(diagnostics.logLevelCounts.Error, 1);
-    assert.equal(diagnostics.logLevelCounts.Warning, 1);
-    assert.equal(diagnostics.commonFailures[0]?.name, "orchestration.dispatch");
-    assert.equal(diagnostics.commonFailures[0]?.count, 2);
-    assert.equal(diagnostics.latestFailures[0]?.traceId, "trace-c");
-    assert.equal(diagnostics.slowestSpans[0]?.traceId, "trace-b");
-    assert.equal(diagnostics.latestWarningAndErrorLogs[0]?.message, "status delayed");
-    assert.equal(diagnostics.topSpansByCount[0]?.name, "orchestration.dispatch");
-  });
+      assert.equal(diagnostics.latestFailures[0]?.cause, longCause);
+      assert.equal(diagnostics.commonFailures[0]?.cause, longCause);
+      assert.equal(diagnostics.latestWarningAndErrorLogs[0]?.message, longMessage);
+    }),
+  );
 
-  it("returns a not-found diagnostic when no files are available", () => {
-    const diagnostics = aggregateTraceDiagnostics({
-      traceFilePath: "/tmp/missing.trace.ndjson",
-      readAt: new Date("2026-05-05T10:00:00.000Z"),
-      files: [],
-    });
+  it.effect("keeps loaded trace data when one rotated trace file fails to read", () =>
+    Effect.gen(function* () {
+      const traceFilePath = "/tmp/server.trace.ndjson";
+      const fileSystemLayer = FileSystem.layerNoop({
+        readFileString: (path) =>
+          path === `${traceFilePath}.1`
+            ? Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "FileSystem",
+                  method: "readFileString",
+                  description: "permission denied",
+                  pathOrDescriptor: path,
+                }),
+              )
+            : Effect.succeed(
+                record({
+                  name: "server.getConfig",
+                  traceId: "trace-a",
+                  spanId: "span-a",
+                  startMs: 1_000,
+                  durationMs: 50,
+                }),
+              ),
+      });
 
-    assert.equal(diagnostics.recordCount, 0);
-    assert.equal(diagnostics.error?.kind, "trace-file-not-found");
-  });
+      const diagnostics = yield* TraceDiagnostics.readTraceDiagnostics({
+        traceFilePath,
+        maxFiles: 1,
+        readAt: new Date("2026-05-05T10:00:00.000Z"),
+      }).pipe(Effect.provide(TraceDiagnostics.layer.pipe(Layer.provide(fileSystemLayer))));
 
-  it("preserves full failure causes and log messages", () => {
-    const longCause = `VcsProcessSpawnError: ${"missing executable ".repeat(80)}`.trim();
-    const longMessage = `provider warning: ${"retrying command ".repeat(80)}`.trim();
-    const diagnostics = aggregateTraceDiagnostics({
-      traceFilePath: "/tmp/server.trace.ndjson",
-      files: [
-        {
-          path: "/tmp/server.trace.ndjson",
-          text: record({
-            name: "VcsProcess.run",
-            traceId: "trace-long",
-            spanId: "span-long",
-            startMs: 1_000,
-            durationMs: 25,
-            exit: { _tag: "Failure", cause: longCause },
-            events: [
-              {
-                name: longMessage,
-                timeUnixNano: ns(1_010),
-                attributes: { "effect.logLevel": "Warning" },
-              },
-            ],
-          }),
-        },
-      ],
-    });
-
-    assert.equal(diagnostics.latestFailures[0]?.cause, longCause);
-    assert.equal(diagnostics.commonFailures[0]?.cause, longCause);
-    assert.equal(diagnostics.latestWarningAndErrorLogs[0]?.message, longMessage);
-  });
+      assert.equal(diagnostics.recordCount, 1);
+      assert.equal(diagnostics.partialFailure, true);
+      assert.equal(diagnostics.error?.kind, "trace-file-read-failed");
+      assert.deepStrictEqual(diagnostics.scannedFilePaths, [`${traceFilePath}.1`, traceFilePath]);
+    }),
+  );
 });

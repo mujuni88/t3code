@@ -241,6 +241,7 @@ export const ServerTraceDiagnosticsResult = Schema.Struct({
   commonFailures: Schema.Array(ServerTraceDiagnosticsFailureSummary),
   latestFailures: Schema.Array(ServerTraceDiagnosticsRecentFailure),
   latestWarningAndErrorLogs: Schema.Array(ServerTraceDiagnosticsLogEvent),
+  partialFailure: Schema.optional(Schema.Boolean),
   error: Schema.optional(
     Schema.Struct({
       kind: ServerTraceDiagnosticsErrorKind,

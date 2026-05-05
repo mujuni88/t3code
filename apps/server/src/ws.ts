@@ -54,8 +54,8 @@ import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptR
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
-import { readProcessDiagnostics, signalProcess } from "./diagnostics/ProcessDiagnostics.ts";
-import { readTraceDiagnostics } from "./diagnostics/TraceDiagnostics.ts";
+import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
+import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import { SourceControlRepositoryService } from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -812,7 +812,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetTraceDiagnostics,
-            readTraceDiagnostics({
+            TraceDiagnostics.readTraceDiagnostics({
               traceFilePath: config.serverTracePath,
               maxFiles: config.traceMaxFiles,
             }),
@@ -821,13 +821,21 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             },
           ),
         [WS_METHODS.serverGetProcessDiagnostics]: (_input) =>
-          observeRpcEffect(WS_METHODS.serverGetProcessDiagnostics, readProcessDiagnostics(), {
-            "rpc.aggregate": "server",
-          }),
+          observeRpcEffect(
+            WS_METHODS.serverGetProcessDiagnostics,
+            ProcessDiagnostics.readProcessDiagnostics(),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverSignalProcess]: (input) =>
-          observeRpcEffect(WS_METHODS.serverSignalProcess, signalProcess(input), {
-            "rpc.aggregate": "server",
-          }),
+          observeRpcEffect(
+            WS_METHODS.serverSignalProcess,
+            ProcessDiagnostics.signalProcess(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,

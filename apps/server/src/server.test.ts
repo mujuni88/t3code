@@ -113,6 +113,8 @@ import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
+import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
+import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
@@ -534,6 +536,48 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(Open)({
           ...options?.layers?.open,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
+          read: Effect.succeed({
+            serverPid: process.pid,
+            readAt: TEST_EPOCH.toString(),
+            processCount: 0,
+            totalRssBytes: 0,
+            totalCpuPercent: 0,
+            processes: [],
+          }),
+          signal: (input) =>
+            Effect.succeed({
+              pid: input.pid,
+              signal: input.signal,
+              signaled: true,
+            }),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(TraceDiagnostics.TraceDiagnostics)({
+          read: () =>
+            Effect.succeed({
+              traceFilePath: "",
+              scannedFilePaths: [],
+              readAt: TEST_EPOCH.toString(),
+              recordCount: 0,
+              parseErrorCount: 0,
+              firstSpanAt: null,
+              lastSpanAt: null,
+              failureCount: 0,
+              interruptionCount: 0,
+              slowSpanThresholdMs: 1_000,
+              slowSpanCount: 0,
+              logLevelCounts: {},
+              topSpansByCount: [],
+              slowestSpans: [],
+              commonFailures: [],
+              latestFailures: [],
+              latestWarningAndErrorLogs: [],
+            }),
         }),
       ),
       Layer.provide(gitManagerLayer),

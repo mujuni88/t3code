@@ -4,9 +4,12 @@ import type {
   ServerProcessSignal,
   ServerSignalProcessResult,
 } from "@t3tools/contracts";
-import { Effect, Schema } from "effect";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
-import { runProcess } from "../processRunner.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 
 interface ProcessRow {
   readonly pid: number;
@@ -21,6 +24,20 @@ interface ProcessRow {
 
 const PROCESS_QUERY_TIMEOUT_MS = 1_000;
 const POSIX_PROCESS_QUERY_COMMAND = "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=";
+const PROCESS_QUERY_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+
+export interface ProcessDiagnosticsShape {
+  readonly read: Effect.Effect<ServerProcessDiagnosticsResult>;
+  readonly signal: (input: {
+    readonly pid: number;
+    readonly signal: ServerProcessSignal;
+  }) => Effect.Effect<ServerSignalProcessResult>;
+}
+
+export class ProcessDiagnostics extends Context.Service<
+  ProcessDiagnostics,
+  ProcessDiagnosticsShape
+>()("t3/diagnostics/ProcessDiagnostics") {}
 
 class ProcessDiagnosticsError extends Schema.TaggedErrorClass<ProcessDiagnosticsError>()(
   "ProcessDiagnosticsError",
@@ -202,7 +219,7 @@ function buildDescendantEntries(
       childPids: children.map((child) => child.pid),
     });
 
-    stack.unshift(...children.map((row) => ({ row, depth: item.depth + 1 })).toReversed());
+    stack.unshift(...children.map((row) => ({ row, depth: item.depth + 1 })));
   }
 
   return entries;
@@ -242,31 +259,37 @@ function makeResult(input: {
   };
 }
 
-function readPosixProcessRows(): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
-  return Effect.tryPromise({
-    try: async () => {
-      const result = await runProcess("ps", ["-axo", POSIX_PROCESS_QUERY_COMMAND], {
-        timeoutMs: PROCESS_QUERY_TIMEOUT_MS,
-        allowNonZeroExit: true,
-        maxBufferBytes: 2 * 1024 * 1024,
-        outputMode: "truncate",
-      });
-      if (result.code !== 0) {
-        throw toProcessDiagnosticsError(result.stderr.trim() || "ps failed.");
-      }
-      return parsePosixProcessRows(result.stdout);
-    },
-    catch: (cause) =>
-      Schema.is(ProcessDiagnosticsError)(cause)
-        ? cause
-        : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
-  });
+function readPosixProcessRows(
+  vcsProcess: VcsProcess.VcsProcessShape,
+): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
+  return vcsProcess
+    .run({
+      operation: "ProcessDiagnostics.readPosixProcessRows",
+      command: "ps",
+      args: ["-axo", POSIX_PROCESS_QUERY_COMMAND],
+      cwd: process.cwd(),
+      timeoutMs: PROCESS_QUERY_TIMEOUT_MS,
+      allowNonZeroExit: true,
+      maxOutputBytes: PROCESS_QUERY_MAX_OUTPUT_BYTES,
+      truncateOutputAtMaxBytes: true,
+    })
+    .pipe(
+      Effect.flatMap((result) =>
+        result.exitCode !== 0
+          ? Effect.fail(toProcessDiagnosticsError(result.stderr.trim() || "ps failed."))
+          : Effect.succeed(parsePosixProcessRows(result.stdout)),
+      ),
+      Effect.mapError((cause) =>
+        Schema.is(ProcessDiagnosticsError)(cause)
+          ? cause
+          : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
+      ),
+    );
 }
 
-function readWindowsProcessRows(): Effect.Effect<
-  ReadonlyArray<ProcessRow>,
-  ProcessDiagnosticsError
-> {
+function readWindowsProcessRows(
+  vcsProcess: VcsProcess.VcsProcessShape,
+): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
   const command = [
     "$processes = Get-CimInstance Win32_Process | ForEach-Object {",
     '$perf = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess = $($_.ProcessId)" -ErrorAction SilentlyContinue;',
@@ -275,32 +298,39 @@ function readWindowsProcessRows(): Effect.Effect<
     "$processes | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
 
-  return Effect.tryPromise({
-    try: async () => {
-      const result = await runProcess(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", command],
-        {
-          timeoutMs: PROCESS_QUERY_TIMEOUT_MS,
-          allowNonZeroExit: true,
-          maxBufferBytes: 2 * 1024 * 1024,
-          outputMode: "truncate",
-        },
-      );
-      if (result.code !== 0) {
-        throw toProcessDiagnosticsError(result.stderr.trim() || "PowerShell process query failed.");
-      }
-      return parseWindowsProcessRows(result.stdout);
-    },
-    catch: (cause) =>
-      Schema.is(ProcessDiagnosticsError)(cause)
-        ? cause
-        : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
-  });
+  return vcsProcess
+    .run({
+      operation: "ProcessDiagnostics.readWindowsProcessRows",
+      command: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", command],
+      cwd: process.cwd(),
+      timeoutMs: PROCESS_QUERY_TIMEOUT_MS,
+      allowNonZeroExit: true,
+      maxOutputBytes: PROCESS_QUERY_MAX_OUTPUT_BYTES,
+      truncateOutputAtMaxBytes: true,
+    })
+    .pipe(
+      Effect.flatMap((result) =>
+        result.exitCode !== 0
+          ? Effect.fail(
+              toProcessDiagnosticsError(result.stderr.trim() || "PowerShell process query failed."),
+            )
+          : Effect.succeed(parseWindowsProcessRows(result.stdout)),
+      ),
+      Effect.mapError((cause) =>
+        Schema.is(ProcessDiagnosticsError)(cause)
+          ? cause
+          : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
+      ),
+    );
 }
 
-function readProcessRows(): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
-  return process.platform === "win32" ? readWindowsProcessRows() : readPosixProcessRows();
+function readProcessRows(
+  vcsProcess: VcsProcess.VcsProcessShape,
+): Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError> {
+  return process.platform === "win32"
+    ? readWindowsProcessRows(vcsProcess)
+    : readPosixProcessRows(vcsProcess);
 }
 
 export function aggregateProcessDiagnostics(input: {
@@ -311,22 +341,15 @@ export function aggregateProcessDiagnostics(input: {
   return makeResult(input);
 }
 
-export function readProcessDiagnostics(): Effect.Effect<ServerProcessDiagnosticsResult> {
-  const serverPid = process.pid;
-  return readProcessRows().pipe(
-    Effect.map((rows) => makeResult({ serverPid, rows })),
-    Effect.catch((error: ProcessDiagnosticsError) =>
-      Effect.succeed(makeResult({ serverPid, rows: [], error: error.message })),
-    ),
-  );
-}
-
-function assertDescendantPid(pid: number): Effect.Effect<void, ProcessDiagnosticsError> {
+function assertDescendantPid(
+  vcsProcess: VcsProcess.VcsProcessShape,
+  pid: number,
+): Effect.Effect<void, ProcessDiagnosticsError> {
   if (pid === process.pid) {
     return Effect.fail(toProcessDiagnosticsError("Refusing to signal the T3 server process."));
   }
 
-  return readProcessRows().pipe(
+  return readProcessRows(vcsProcess).pipe(
     Effect.flatMap((rows) => {
       const descendant = buildDescendantEntries(rows, process.pid).some(
         (entry) => entry.pid === pid,
@@ -340,35 +363,70 @@ function assertDescendantPid(pid: number): Effect.Effect<void, ProcessDiagnostic
   );
 }
 
+export const make = Effect.fn("makeProcessDiagnostics")(function* () {
+  const vcsProcess = yield* VcsProcess.VcsProcess;
+
+  const read: ProcessDiagnosticsShape["read"] = readProcessRows(vcsProcess).pipe(
+    Effect.map((rows) => makeResult({ serverPid: process.pid, rows })),
+    Effect.catch((error: ProcessDiagnosticsError) =>
+      Effect.succeed(makeResult({ serverPid: process.pid, rows: [], error: error.message })),
+    ),
+  );
+
+  const signal: ProcessDiagnosticsShape["signal"] = Effect.fn("ProcessDiagnostics.signal")(
+    function* (input) {
+      return yield* assertDescendantPid(vcsProcess, input.pid).pipe(
+        Effect.flatMap(() =>
+          Effect.try({
+            try: () => {
+              process.kill(input.pid, input.signal);
+              return {
+                pid: input.pid,
+                signal: input.signal,
+                signaled: true,
+              };
+            },
+            catch: (cause) =>
+              toProcessDiagnosticsError(
+                `Failed to signal process ${input.pid} with ${input.signal}.`,
+                cause,
+              ),
+          }),
+        ),
+        Effect.catch((error: ProcessDiagnosticsError) =>
+          Effect.succeed({
+            pid: input.pid,
+            signal: input.signal,
+            signaled: false,
+            message: error.message,
+          }),
+        ),
+      );
+    },
+  );
+
+  return ProcessDiagnostics.of({ read, signal });
+});
+
+export const layer = Layer.effect(ProcessDiagnostics, make());
+
+export function readProcessDiagnostics(): Effect.Effect<
+  ServerProcessDiagnosticsResult,
+  never,
+  ProcessDiagnostics
+> {
+  return Effect.gen(function* () {
+    const diagnostics = yield* ProcessDiagnostics;
+    return yield* diagnostics.read;
+  });
+}
+
 export function signalProcess(input: {
   readonly pid: number;
   readonly signal: ServerProcessSignal;
-}): Effect.Effect<ServerSignalProcessResult> {
-  return assertDescendantPid(input.pid).pipe(
-    Effect.flatMap(() =>
-      Effect.try({
-        try: () => {
-          process.kill(input.pid, input.signal);
-          return {
-            pid: input.pid,
-            signal: input.signal,
-            signaled: true,
-          };
-        },
-        catch: (cause) =>
-          toProcessDiagnosticsError(
-            `Failed to signal process ${input.pid} with ${input.signal}.`,
-            cause,
-          ),
-      }),
-    ),
-    Effect.catch((error: ProcessDiagnosticsError) =>
-      Effect.succeed({
-        pid: input.pid,
-        signal: input.signal,
-        signaled: false,
-        message: error.message,
-      }),
-    ),
-  );
+}): Effect.Effect<ServerSignalProcessResult, never, ProcessDiagnostics> {
+  return Effect.gen(function* () {
+    const diagnostics = yield* ProcessDiagnostics;
+    return yield* diagnostics.signal(input);
+  });
 }

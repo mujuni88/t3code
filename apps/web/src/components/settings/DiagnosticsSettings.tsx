@@ -764,9 +764,18 @@ export function DiagnosticsSettingsPanel() {
               </div>
             ) : null}
             {data?.error ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div
+                className={cn(
+                  "flex items-start gap-2",
+                  data.partialFailure ? "text-amber-600 dark:text-amber-400" : "text-destructive",
+                )}
+              >
                 <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-                <span>{data.error.message}</span>
+                <span>
+                  {data.partialFailure
+                    ? `Some trace files could not be read, so diagnostics may be incomplete. ${data.error.message}`
+                    : data.error.message}
+                </span>
               </div>
             ) : null}
             {error ? (
