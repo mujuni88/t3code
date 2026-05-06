@@ -374,12 +374,12 @@ function ProcessSignalActions({
 
 function ProcessDiagnosticsTable({
   processes,
-  signalingPid,
+  signalingPids,
   onSignal,
   emptyLabel,
 }: {
   processes: ReadonlyArray<ServerProcessDiagnosticsEntry>;
-  signalingPid: number | null;
+  signalingPids: ReadonlySet<number>;
   onSignal: (pid: number, signal: ServerProcessSignal) => void;
   emptyLabel?: string;
 }) {
@@ -488,7 +488,7 @@ function ProcessDiagnosticsTable({
               <td className="px-2 py-2 align-middle sm:pr-4">
                 <ProcessSignalActions
                   process={process}
-                  isSignaling={signalingPid === process.pid}
+                  isSignaling={signalingPids.has(process.pid)}
                   onSignal={onSignal}
                 />
               </td>
@@ -563,7 +563,7 @@ export function DiagnosticsSettingsPanel() {
   } = useProcessDiagnostics();
   const [isOpeningLogsDirectory, setIsOpeningLogsDirectory] = useState(false);
   const [openLogsDirectoryError, setOpenLogsDirectoryError] = useState<string | null>(null);
-  const [signalingPid, setSignalingPid] = useState<number | null>(null);
+  const [signalingPids, setSignalingPids] = useState<ReadonlySet<number>>(() => new Set());
 
   const openLogsDirectory = useCallback(() => {
     const logsDirectoryPath = observability?.logsDirectoryPath ?? null;
@@ -600,7 +600,7 @@ export function DiagnosticsSettingsPanel() {
         return;
       }
 
-      setSignalingPid(pid);
+      setSignalingPids((prev) => new Set([...prev, pid]));
       void ensureLocalApi()
         .server.signalProcess({ pid, signal })
         .then((result) => {
@@ -633,7 +633,11 @@ export function DiagnosticsSettingsPanel() {
           });
         })
         .finally(() => {
-          setSignalingPid(null);
+          setSignalingPids((prev) => {
+            const next = new Set(prev);
+            next.delete(pid);
+            return next;
+          });
         });
     },
     [refreshProcesses],
@@ -692,7 +696,7 @@ export function DiagnosticsSettingsPanel() {
         ) : null}
         <ProcessDiagnosticsTable
           processes={processData?.processes ?? []}
-          signalingPid={signalingPid}
+          signalingPids={signalingPids}
           onSignal={signalProcess}
           emptyLabel={
             isProcessInitialLoading
