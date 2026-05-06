@@ -79,20 +79,18 @@ export const observeRpcStream = <A, E, R>(
   stream: Stream.Stream<A, E, R>,
   traceAttributes?: Readonly<Record<string, unknown>>,
 ): Stream.Stream<A, E, R> => {
-  const instrumented = Stream.unwrap(
-    Effect.gen(function* () {
-      const startedAt = Date.now();
-      return stream.pipe(Stream.onExit((exit) => recordRpcStreamMetrics(method, startedAt, exit)));
-    }),
-  );
+  const makeInstrumented = Effect.gen(function* () {
+    const startedAt = Date.now();
+    return stream.pipe(Stream.onExit((exit) => recordRpcStreamMetrics(method, startedAt, exit)));
+  });
 
   return shouldTraceRpc(method)
-    ? instrumented.pipe(
+    ? Stream.unwrap(makeInstrumented).pipe(
         Stream.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
           attributes: rpcSpanAttributes(method, traceAttributes),
         }),
       )
-    : instrumented;
+    : Stream.unwrap(makeInstrumented.pipe(Effect.withTracerEnabled(false)));
 };
 
 export const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
@@ -100,27 +98,25 @@ export const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectErro
   effect: Effect.Effect<Stream.Stream<A, StreamError, StreamContext>, EffectError, EffectContext>,
   traceAttributes?: Readonly<Record<string, unknown>>,
 ): Stream.Stream<A, StreamError | EffectError, StreamContext | EffectContext> => {
-  const instrumented = Stream.unwrap(
-    Effect.gen(function* () {
-      const startedAt = Date.now();
-      const exit = yield* Effect.exit(effect);
+  const makeInstrumented = Effect.gen(function* () {
+    const startedAt = Date.now();
+    const exit = yield* Effect.exit(effect);
 
-      if (Exit.isFailure(exit)) {
-        yield* recordRpcStreamMetrics(method, startedAt, exit);
-        return yield* Effect.failCause(exit.cause);
-      }
+    if (Exit.isFailure(exit)) {
+      yield* recordRpcStreamMetrics(method, startedAt, exit);
+      return yield* Effect.failCause(exit.cause);
+    }
 
-      return exit.value.pipe(
-        Stream.onExit((streamExit) => recordRpcStreamMetrics(method, startedAt, streamExit)),
-      );
-    }),
-  );
+    return exit.value.pipe(
+      Stream.onExit((streamExit) => recordRpcStreamMetrics(method, startedAt, streamExit)),
+    );
+  });
 
   return shouldTraceRpc(method)
-    ? instrumented.pipe(
+    ? Stream.unwrap(makeInstrumented).pipe(
         Stream.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
           attributes: rpcSpanAttributes(method, traceAttributes),
         }),
       )
-    : instrumented;
+    : Stream.unwrap(makeInstrumented.pipe(Effect.withTracerEnabled(false)));
 };
