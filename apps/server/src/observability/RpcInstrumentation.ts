@@ -19,14 +19,14 @@ function shouldTraceRpc(method: string): boolean {
   return !RPC_METHODS_WITH_TRACING_DISABLED.has(method);
 }
 
-const annotateRpcSpan = (
+const rpcSpanAttributes = (
   method: string,
   traceAttributes?: Readonly<Record<string, unknown>>,
-): Effect.Effect<void, never, never> =>
-  Effect.annotateCurrentSpan({
-    "rpc.method": method,
-    ...traceAttributes,
-  });
+): Record<string, unknown> => ({
+  ...DEFAULT_RPC_SPAN_ATTRIBUTES,
+  "rpc.method": method,
+  ...traceAttributes,
+});
 
 const recordRpcStreamMetrics = <E>(
   method: string,
@@ -55,27 +55,20 @@ export const observeRpcEffect = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   traceAttributes?: Readonly<Record<string, unknown>>,
 ): Effect.Effect<A, E, R> => {
-  const instrumented = Effect.gen(function* () {
-    yield* annotateRpcSpan(method, traceAttributes);
-
-    return yield* effect.pipe(
-      withMetrics({
-        counter: rpcRequestsTotal,
-        timer: rpcRequestDuration,
-        attributes: {
-          method,
-        },
-      }),
-    );
-  });
+  const instrumented = effect.pipe(
+    withMetrics({
+      counter: rpcRequestsTotal,
+      timer: rpcRequestDuration,
+      attributes: {
+        method,
+      },
+    }),
+  );
 
   return shouldTraceRpc(method)
     ? instrumented.pipe(
         Effect.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
-          attributes: {
-            ...DEFAULT_RPC_SPAN_ATTRIBUTES,
-            ...traceAttributes,
-          },
+          attributes: rpcSpanAttributes(method, traceAttributes),
         }),
       )
     : instrumented.pipe(Effect.withTracerEnabled(false));
@@ -85,32 +78,30 @@ export const observeRpcStream = <A, E, R>(
   method: string,
   stream: Stream.Stream<A, E, R>,
   traceAttributes?: Readonly<Record<string, unknown>>,
-): Stream.Stream<A, E, R> =>
-  Stream.unwrap(
+): Stream.Stream<A, E, R> => {
+  const instrumented = Stream.unwrap(
     Effect.gen(function* () {
-      yield* annotateRpcSpan(method, traceAttributes);
       const startedAt = Date.now();
       return stream.pipe(Stream.onExit((exit) => recordRpcStreamMetrics(method, startedAt, exit)));
-    }).pipe(
-      shouldTraceRpc(method)
-        ? Effect.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
-            attributes: {
-              ...DEFAULT_RPC_SPAN_ATTRIBUTES,
-              ...traceAttributes,
-            },
-          })
-        : Effect.withTracerEnabled(false),
-    ),
+    }),
   );
+
+  return shouldTraceRpc(method)
+    ? instrumented.pipe(
+        Stream.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
+          attributes: rpcSpanAttributes(method, traceAttributes),
+        }),
+      )
+    : instrumented;
+};
 
 export const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
   method: string,
   effect: Effect.Effect<Stream.Stream<A, StreamError, StreamContext>, EffectError, EffectContext>,
   traceAttributes?: Readonly<Record<string, unknown>>,
-): Stream.Stream<A, StreamError | EffectError, StreamContext | EffectContext> =>
-  Stream.unwrap(
+): Stream.Stream<A, StreamError | EffectError, StreamContext | EffectContext> => {
+  const instrumented = Stream.unwrap(
     Effect.gen(function* () {
-      yield* annotateRpcSpan(method, traceAttributes);
       const startedAt = Date.now();
       const exit = yield* Effect.exit(effect);
 
@@ -122,14 +113,14 @@ export const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectErro
       return exit.value.pipe(
         Stream.onExit((streamExit) => recordRpcStreamMetrics(method, startedAt, streamExit)),
       );
-    }).pipe(
-      shouldTraceRpc(method)
-        ? Effect.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
-            attributes: {
-              ...DEFAULT_RPC_SPAN_ATTRIBUTES,
-              ...traceAttributes,
-            },
-          })
-        : Effect.withTracerEnabled(false),
-    ),
+    }),
   );
+
+  return shouldTraceRpc(method)
+    ? instrumented.pipe(
+        Stream.withSpan(`${RPC_SPAN_PREFIX}.${method}`, {
+          attributes: rpcSpanAttributes(method, traceAttributes),
+        }),
+      )
+    : instrumented;
+};
