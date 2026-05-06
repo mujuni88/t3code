@@ -1,3 +1,4 @@
+import { WS_METHODS } from "@t3tools/contracts";
 import { Duration, Effect, Exit, Metric, Stream } from "effect";
 
 import { outcomeFromExit } from "./Attributes.ts";
@@ -9,8 +10,9 @@ const DEFAULT_RPC_SPAN_ATTRIBUTES = {
   "rpc.system": "effect-rpc",
 } as const;
 const RPC_METHODS_WITH_TRACING_DISABLED = new Set([
-  "server.getTraceDiagnostics",
-  "server.getProcessDiagnostics",
+  WS_METHODS.serverGetTraceDiagnostics,
+  WS_METHODS.serverGetProcessDiagnostics,
+  WS_METHODS.serverSignalProcess,
 ]);
 
 function shouldTraceRpc(method: string): boolean {
