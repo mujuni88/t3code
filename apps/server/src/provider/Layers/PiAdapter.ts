@@ -40,9 +40,24 @@ const PROVIDER = ProviderDriverKind.make("pi");
 
 interface PiSessionContext {
   readonly threadId: ThreadId;
+  readonly cwd: string;
   readonly modelId: string;
   readonly runtime: unknown;
   stopped: boolean;
+}
+
+interface PiResumeCursor {
+  readonly cwd: string;
+  readonly model: string;
+}
+
+function isPiResumeCursor(x: unknown): x is PiResumeCursor {
+  return (
+    typeof x === "object" &&
+    x !== null &&
+    typeof (x as Record<string, unknown>).cwd === "string" &&
+    typeof (x as Record<string, unknown>).model === "string"
+  );
 }
 
 export interface PiAdapterOptions {
@@ -84,12 +99,17 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         sessions.delete(existing.threadId);
       }
 
+      const cursor = isPiResumeCursor(input.resumeCursor) ? input.resumeCursor : null;
+      const sessionCwd = cursor?.cwd ?? input.cwd ?? process.cwd();
+      const sessionModel = cursor?.model ?? undefined;
+
+      const runtimeOpts: import("./PiSessionRuntime.ts").PiSessionRuntimeOptions = {
+        cwd: sessionCwd,
+        env: environment,
+        ...(sessionModel != null ? { model: sessionModel } : {}),
+      };
       const startResult = yield* Effect.tryPromise({
-        try: () =>
-          makePiSessionRuntime({
-            cwd: input.cwd ?? process.cwd(),
-            env: environment,
-          }),
+        try: () => makePiSessionRuntime(runtimeOpts),
         catch: (cause) =>
           new ProviderAdapterProcessError({
             provider: PROVIDER,
@@ -106,6 +126,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
       sessions.set(input.threadId, {
         threadId: input.threadId,
+        cwd: sessionCwd,
         modelId: startResult.modelId,
         runtime: startResult.runtime,
         stopped: false,
@@ -130,9 +151,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         status: "ready",
         runtimeMode: input.runtimeMode,
         threadId: input.threadId,
+        cwd: sessionCwd,
+        model: startResult.modelId,
+        resumeCursor: { cwd: sessionCwd, model: startResult.modelId } satisfies PiResumeCursor,
         createdAt: now,
         updatedAt: now,
-        // codexThreadId is intentionally absent on pi sessions per the spec.
       };
       return session;
     });
@@ -192,6 +215,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             status: "ready",
             runtimeMode: "approval-required" as const,
             threadId: session.threadId,
+            cwd: session.cwd,
+            model: session.modelId,
+            resumeCursor: { cwd: session.cwd, model: session.modelId } satisfies PiResumeCursor,
             createdAt: now,
             updatedAt: now,
           } satisfies ProviderSession;
