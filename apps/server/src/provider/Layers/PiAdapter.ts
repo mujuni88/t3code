@@ -3,7 +3,7 @@
  * runtime.
  *
  * Translates pi's `AgentEvent` stream (emitted by the runtime returned from
- * `createAgentSessionRuntime`) into the canonical `ProviderRuntimeEvent`
+ * `createAgentSession`) into the canonical `ProviderRuntimeEvent`
  * shape so the renderer requires no changes. `codexThreadId` is intentionally
  * left null on pi sessions per the spec.
  *

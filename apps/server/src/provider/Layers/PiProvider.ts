@@ -26,15 +26,11 @@ const PI_PRESENTATION = {
   showInteractionModeToggle: false,
 } as const;
 
-/**
- * Stable Claude 3.5 Sonnet model identifier as exposed by pi's
- * `ModelRegistry`. Hardcoded per the spike spec — no model picker.
- */
-export const PI_DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
+export const PI_DEFAULT_MODEL = "claude-sonnet-4-5";
 
 const PI_MODEL: ServerProviderModel = {
   slug: PI_DEFAULT_MODEL,
-  name: "Claude 3.5 Sonnet (pi)",
+  name: "Claude Sonnet 4.5 (pi)",
   isCustom: false,
   capabilities: { optionDescriptors: [] },
 };
