@@ -245,6 +245,9 @@ import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { VoiceChatButton } from "../voice-chat/VoiceChatButton";
+import { VoiceChatDialog } from "../voice-chat/VoiceChatDialog";
+import { useVoiceChat } from "../voice-chat/useVoiceChat";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -1525,6 +1528,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
     onFileOpen,
   } = props;
+  const voiceThreadId = routeKind === "server" ? activeThreadId : null;
+  const voiceUnavailable = environmentUnavailable !== null || isConnecting;
+  const voiceChat = useVoiceChat(environmentId, voiceThreadId, voiceUnavailable);
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
   // ------------------------------------------------------------------
@@ -6821,6 +6827,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
+                  <VoiceChatButton
+                    disabled={voiceThreadId === null || voiceUnavailable}
+                    onClick={voiceChat.start}
+                  />
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}
                     activeContextWindow={
@@ -6861,6 +6871,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
+      <VoiceChatDialog
+        open={voiceChat.open}
+        state={voiceChat.state}
+        onClose={voiceChat.close}
+        onStart={voiceChat.start}
+        onMutedChange={voiceChat.setMuted}
+      />
     </form>
   );
 });
