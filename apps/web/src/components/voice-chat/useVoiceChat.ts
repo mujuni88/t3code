@@ -20,7 +20,13 @@ const stopVoice = createEnvironmentRpcCommand(connectionAtomRuntime, {
 type Controller = ReturnType<typeof createLiveVoiceController>;
 export type VoiceChatState = ReturnType<Controller["getState"]>;
 
-const initialState: VoiceChatState = { status: "idle", muted: false, error: null, transcript: [] };
+const initialState: VoiceChatState = {
+  status: "idle",
+  activity: "idle",
+  muted: false,
+  error: null,
+  transcript: [],
+};
 
 export function useVoiceChat(
   environmentId: EnvironmentId,
@@ -59,7 +65,9 @@ export function useVoiceChat(
         if (result._tag !== "Success") throw Cause.squash(result.cause);
       },
       onStateChange: (next) => {
-        if (active) setState(next);
+        if (!active) return;
+        setState(next);
+        if (next.status === "idle") setOpen(false);
       },
     });
     controllerRef.current = controller;

@@ -32,6 +32,7 @@ function harness(overrides: Partial<LiveVoiceControllerDependencies> = {}) {
     dependencies,
     states,
     event: (data: unknown) => callbacks.onEvent(data),
+    activity: (activity: "idle" | "user" | "assistant") => callbacks.onAudioActivity(activity),
     connection: (state: Parameters<LiveVoiceTransportCallbacks["onConnectionState"]>[0]) =>
       callbacks.onConnectionState(state),
   };
@@ -194,6 +195,35 @@ describe("live voice lifecycle", () => {
     h.connection("connected");
     expect(h.controller.getState().transcript[1]?.text).toBe("Okay.");
     expect(h.controller.getState().status).toBe("idle");
+    expect(h.controller.getState().activity).toBe("idle");
+  });
+
+  it("uses transport audio activity without letting delayed transcripts override it", async () => {
+    const h = harness();
+    await h.controller.start();
+
+    h.activity("user");
+    expect(h.controller.getState().activity).toBe("user");
+    h.event({ type: "session.output_transcript.delta", delta: "Delayed caption" });
+    expect(h.controller.getState().activity).toBe("user");
+
+    h.activity("assistant");
+    expect(h.controller.getState().activity).toBe("assistant");
+    h.activity("idle");
+    expect(h.controller.getState().activity).toBe("idle");
+    await h.controller.stop();
+  });
+
+  it("temporarily derives activity from transcripts when audio metering is unavailable", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    await h.controller.start();
+
+    h.event({ type: "session.input_transcript.delta", delta: "Hello" });
+    expect(h.controller.getState().activity).toBe("user");
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(h.controller.getState().activity).toBe("idle");
+    await h.controller.stop();
   });
 
   it("bounds both conversation history and a single uninterrupted transcript", async () => {

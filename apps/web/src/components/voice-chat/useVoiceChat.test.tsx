@@ -19,7 +19,11 @@ import { useVoiceChat } from "./useVoiceChat";
 let root: Root;
 let voice: ReturnType<typeof useVoiceChat>;
 let testDocument: EventTarget & { nodeType: number; visibilityState: string };
-let transports: Array<{ close: ReturnType<typeof vi.fn>; setMuted: ReturnType<typeof vi.fn> }>;
+let transports: Array<{
+  callbacks: LiveVoiceTransportCallbacks;
+  close: ReturnType<typeof vi.fn>;
+  setMuted: ReturnType<typeof vi.fn>;
+}>;
 const environmentId = EnvironmentId.make("voice-environment");
 const firstThread = ThreadId.make("first-thread");
 const secondThread = ThreadId.make("second-thread");
@@ -46,6 +50,7 @@ beforeEach(async () => {
   mocks.stop.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   mocks.createTransport.mockReset().mockImplementation((callbacks: LiveVoiceTransportCallbacks) => {
     const transport = {
+      callbacks,
       createOffer: async () => "offer",
       acceptAnswer: async () => {
         callbacks.onConnectionState("connected");
@@ -143,6 +148,21 @@ describe("voice chat ownership", () => {
     });
     expect(transports[0]!.close).toHaveBeenCalledOnce();
     expect(voice.state.status).toBe("idle");
+    expect(voice.open).toBe(false);
+  });
+
+  it("closes the conversation panel when the voice session ends remotely", async () => {
+    await act(async () => {
+      voice.start();
+    });
+    expect(voice.open).toBe(true);
+
+    await act(() => {
+      transports[0]!.callbacks.onEvent({ type: "session.closed" });
+    });
+
+    expect(voice.state.status).toBe("idle");
+    expect(voice.open).toBe(false);
   });
 
   it("waits for a pending microphone request from the previous thread to settle", async () => {

@@ -62,7 +62,11 @@ import { createNativeLiveVoiceTransport } from "./nativeLiveVoiceTransport";
 import { isLiveVoiceMicrophoneReserved } from "./microphoneReservation";
 
 function setup() {
-  const callbacks = { onEvent: vi.fn(), onConnectionState: vi.fn() };
+  const callbacks = {
+    onEvent: vi.fn(),
+    onAudioActivity: vi.fn(),
+    onConnectionState: vi.fn(),
+  };
   return { callbacks, transport: createNativeLiveVoiceTransport(callbacks) };
 }
 

@@ -43,17 +43,57 @@ class FakeAudio {
   }
 }
 
-const callbacks = () => ({ onEvent: vi.fn(), onConnectionState: vi.fn() });
+const callbacks = () => ({
+  onEvent: vi.fn(),
+  onConnectionState: vi.fn(),
+  onAudioActivity: vi.fn(),
+});
+
+class FakeAnalyser {
+  fftSize = 0;
+  amplitude = 0;
+  get frequencyBinCount() {
+    return this.fftSize / 2;
+  }
+  getByteTimeDomainData(data: Uint8Array) {
+    data.forEach((_, index) => {
+      data[index] = 128 + (index % 2 === 0 ? this.amplitude : -this.amplitude);
+    });
+  }
+}
+
+class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  static failSource = false;
+  analysers: FakeAnalyser[] = [];
+  createMediaStreamSource = vi.fn(() => {
+    if (FakeAudioContext.failSource) throw new Error("meter unavailable");
+    return { connect: vi.fn(), disconnect: vi.fn() };
+  });
+  createAnalyser = vi.fn(() => {
+    const analyser = new FakeAnalyser();
+    this.analysers.push(analyser);
+    return analyser;
+  });
+  resume = vi.fn(async () => undefined);
+  close = vi.fn(async () => undefined);
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
+}
 
 beforeEach(() => {
   FakePeer.instances = [];
   FakeAudio.instances = [];
+  FakeAudioContext.instances = [];
+  FakeAudioContext.failSource = false;
   microphoneTrack.enabled = true;
   microphoneTrack.stop.mockReset();
   microphoneTrack.onended = null;
   vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: vi.fn(async () => microphone) } });
   vi.stubGlobal("RTCPeerConnection", FakePeer);
   vi.stubGlobal("Audio", FakeAudio);
+  vi.stubGlobal("AudioContext", FakeAudioContext);
 });
 
 afterEach(() => {
@@ -100,6 +140,41 @@ describe("browser voice transport", () => {
     expect(handlers.onConnectionState).toHaveBeenCalledWith("connected");
     microphoneTrack.onended?.();
     expect(handlers.onConnectionState).toHaveBeenLastCalledWith("failed");
+    transport.close();
+  });
+
+  it("reports microphone and assistant audio immediately, then returns to idle", async () => {
+    vi.useFakeTimers();
+    const handlers = callbacks();
+    const transport = await createBrowserVoiceTransport(handlers);
+    const input = FakeAudioContext.instances[0]!.analysers[0]!;
+
+    input.amplitude = 24;
+    await vi.advanceTimersByTimeAsync(80);
+    expect(handlers.onAudioActivity).toHaveBeenLastCalledWith("user");
+
+    input.amplitude = 0;
+    FakePeer.instances[0]!.ontrack?.({ streams: [{}] });
+    const output = FakeAudioContext.instances[0]!.analysers[1]!;
+    output.amplitude = 24;
+    await vi.advanceTimersByTimeAsync(320);
+    expect(handlers.onAudioActivity).toHaveBeenLastCalledWith("assistant");
+
+    output.amplitude = 0;
+    await vi.advanceTimersByTimeAsync(320);
+    expect(handlers.onAudioActivity).toHaveBeenLastCalledWith("idle");
+    transport.close();
+  });
+
+  it("keeps voice available when optional audio metering cannot start", async () => {
+    FakeAudioContext.failSource = true;
+    const handlers = callbacks();
+
+    const transport = await createBrowserVoiceTransport(handlers);
+
+    expect(FakeAudioContext.instances[0]!.close).toHaveBeenCalledOnce();
+    expect(handlers.onAudioActivity).not.toHaveBeenCalled();
+    expect(FakePeer.instances[0]!.addTrack).toHaveBeenCalledWith(microphoneTrack, microphone);
     transport.close();
   });
 

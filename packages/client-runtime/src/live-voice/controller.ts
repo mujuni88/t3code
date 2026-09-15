@@ -3,8 +3,11 @@ export interface LiveVoiceTranscriptEntry {
   text: string;
 }
 
+export type LiveVoiceActivity = "idle" | "user" | "assistant";
+
 export interface LiveVoiceState {
   status: "idle" | "connecting" | "connected" | "error";
+  activity: LiveVoiceActivity;
   muted: boolean;
   error: string | null;
   transcript: LiveVoiceTranscriptEntry[];
@@ -12,6 +15,7 @@ export interface LiveVoiceState {
 
 export interface LiveVoiceTransportCallbacks {
   onEvent(data: unknown): void;
+  onAudioActivity(activity: LiveVoiceActivity): void;
   onConnectionState(state: "connected" | "failed" | "disconnected" | "closed"): void;
 }
 
@@ -54,6 +58,8 @@ interface Attempt {
   task: Promise<void>;
   eventIds: Set<string>;
   connectionTimeout: ReturnType<typeof setTimeout> | null;
+  transcriptActivityTimeout: ReturnType<typeof setTimeout> | null;
+  hasAudioActivity: boolean;
   peerConnected: boolean;
   sessionStarted: boolean;
 }
@@ -70,7 +76,13 @@ function message(error: unknown): string {
 export function createLiveVoiceController(
   dependencies: LiveVoiceControllerDependencies,
 ): LiveVoiceController {
-  let state: LiveVoiceState = { status: "idle", muted: false, error: null, transcript: [] };
+  let state: LiveVoiceState = {
+    status: "idle",
+    activity: "idle",
+    muted: false,
+    error: null,
+    transcript: [],
+  };
   let active: Attempt | null = null;
   let retiring: Promise<void> | null = null;
   let restartRequest = 0;
@@ -89,6 +101,8 @@ export function createLiveVoiceController(
   const cleanup = async (attempt: Attempt) => {
     if (attempt.connectionTimeout !== null) clearTimeout(attempt.connectionTimeout);
     attempt.connectionTimeout = null;
+    if (attempt.transcriptActivityTimeout !== null) clearTimeout(attempt.transcriptActivityTimeout);
+    attempt.transcriptActivityTimeout = null;
     const transport = attempt.transport;
     attempt.transport = null;
     // Closing can synchronously emit connection callbacks, so detach the attempt first.
@@ -118,7 +132,7 @@ export function createLiveVoiceController(
         if (retiring === retirement) retiring = null;
       });
     retiring = retirement;
-    update(patch);
+    update({ ...patch, activity: "idle" });
     return retirement;
   };
 
@@ -133,7 +147,11 @@ export function createLiveVoiceController(
     update({ status: "connected", error: null });
   };
 
-  const appendTranscript = (role: LiveVoiceTranscriptEntry["role"], delta: string) => {
+  const appendTranscript = (
+    attempt: Attempt,
+    role: LiveVoiceTranscriptEntry["role"],
+    delta: string,
+  ) => {
     if (!delta) return;
     const transcript = state.transcript.map((entry) => ({ ...entry }));
     const last = transcript[transcript.length - 1];
@@ -155,7 +173,19 @@ export function createLiveVoiceController(
         excess = 0;
       }
     }
-    update({ transcript });
+    if (attempt.hasAudioActivity) {
+      update({ transcript });
+      return;
+    }
+    if (attempt.transcriptActivityTimeout !== null) clearTimeout(attempt.transcriptActivityTimeout);
+    update({ transcript, activity: role });
+    // This callback-based media controller owns and clears its short activity deadline.
+    // @effect-diagnostics-next-line globalTimers:off
+    attempt.transcriptActivityTimeout = setTimeout(() => {
+      attempt.transcriptActivityTimeout = null;
+      if (isCurrent(attempt) && !attempt.hasAudioActivity && state.activity === role)
+        update({ activity: "idle" });
+    }, 1_200);
   };
 
   const onEvent = (attempt: Attempt, data: unknown) => {
@@ -182,9 +212,10 @@ export function createLiveVoiceController(
       attempt.sessionStarted = true;
       markReady(attempt);
     } else if (typeof event.delta === "string") {
-      if (event.type === "session.input_transcript.delta") appendTranscript("user", event.delta);
+      if (event.type === "session.input_transcript.delta")
+        appendTranscript(attempt, "user", event.delta);
       else if (event.type === "session.output_transcript.delta")
-        appendTranscript("assistant", event.delta);
+        appendTranscript(attempt, "assistant", event.delta);
     }
   };
 
@@ -211,11 +242,13 @@ export function createLiveVoiceController(
         task: Promise.resolve(),
         eventIds: new Set(),
         connectionTimeout: null,
+        transcriptActivityTimeout: null,
+        hasAudioActivity: false,
         peerConnected: false,
         sessionStarted: false,
       };
       active = attempt;
-      update({ status: "connecting", error: null, transcript: [] });
+      update({ status: "connecting", activity: "idle", error: null, transcript: [] });
       // This callback-based media controller owns and clears its deadline outside Effect fibers.
       // @effect-diagnostics-next-line globalTimers:off
       attempt.connectionTimeout = setTimeout(() => {
@@ -226,6 +259,14 @@ export function createLiveVoiceController(
           if (!isCurrent(attempt)) return;
           attempt.transport = await dependencies.createTransport({
             onEvent: (data) => onEvent(attempt, data),
+            onAudioActivity: (activity) => {
+              if (!isCurrent(attempt)) return;
+              attempt.hasAudioActivity = true;
+              if (attempt.transcriptActivityTimeout !== null)
+                clearTimeout(attempt.transcriptActivityTimeout);
+              attempt.transcriptActivityTimeout = null;
+              if (state.activity !== activity) update({ activity });
+            },
             onConnectionState: (connection) => {
               if (!isCurrent(attempt)) return;
               if (connection === "connected") {

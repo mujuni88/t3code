@@ -246,7 +246,8 @@ import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { VoiceChatButton } from "../voice-chat/VoiceChatButton";
-import { VoiceChatDialog } from "../voice-chat/VoiceChatDialog";
+import { VoiceChatControls } from "../voice-chat/VoiceChatControls";
+import { VoiceConversationPanel } from "../voice-chat/VoiceConversationPanel";
 import { useVoiceChat } from "../voice-chat/useVoiceChat";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -6159,6 +6160,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           />
         ) : null}
       </ComposerBanner.Dock>
+      {voiceChat.open ? <VoiceConversationPanel state={voiceChat.state} /> : null}
       <div className="relative">
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}
@@ -6827,10 +6829,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
-                  <VoiceChatButton
-                    disabled={voiceThreadId === null || voiceUnavailable}
-                    onClick={voiceChat.start}
-                  />
+                  {voiceChat.open ? (
+                    <VoiceChatControls
+                      state={voiceChat.state}
+                      onClose={voiceChat.close}
+                      onMutedChange={voiceChat.setMuted}
+                    />
+                  ) : (
+                    <VoiceChatButton
+                      disabled={voiceThreadId === null || voiceUnavailable}
+                      onClick={voiceChat.start}
+                    />
+                  )}
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}
                     activeContextWindow={
@@ -6871,13 +6881,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
-      <VoiceChatDialog
-        open={voiceChat.open}
-        state={voiceChat.state}
-        onClose={voiceChat.close}
-        onStart={voiceChat.start}
-        onMutedChange={voiceChat.setMuted}
-      />
     </form>
   );
 });

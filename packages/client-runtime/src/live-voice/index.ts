@@ -1,5 +1,6 @@
 export {
   createLiveVoiceController,
+  type LiveVoiceActivity,
   type LiveVoiceController,
   type LiveVoiceControllerDependencies,
   type LiveVoiceState,

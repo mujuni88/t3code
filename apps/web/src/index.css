@@ -244,6 +244,29 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       opacity: 1;
     }
   }
+  @keyframes voice-equalizer {
+    0% {
+      opacity: 1;
+      transform: scaleY(1);
+    }
+    24% {
+      opacity: 0.55;
+      transform: scaleY(0.38);
+    }
+    52% {
+      opacity: 0.9;
+      transform: scaleY(0.82);
+    }
+    76% {
+      opacity: 0.65;
+      transform: scaleY(0.52);
+    }
+    100% {
+      opacity: 1;
+      transform: scaleY(1);
+    }
+  }
+
   @keyframes status-ping {
     /* Burst first (immediate feedback for click ripples), then hold
        invisible for the rest of the cycle. Mirrors animate-ping's
@@ -259,6 +282,38 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       scale: 2;
     }
   }
+}
+
+:root {
+  --voice-listening-pastel: color-mix(
+    in oklab,
+    var(--color-blue-400) 42%,
+    var(--contrast-foreground)
+  );
+  --voice-user-pastel: color-mix(in oklab, var(--color-blue-400) 68%, var(--contrast-foreground));
+  --voice-assistant-pastel: color-mix(
+    in oklab,
+    var(--color-green-400) 68%,
+    var(--contrast-foreground)
+  );
+}
+
+[data-voice-controls] {
+  background-color: color-mix(in oklab, var(--voice-listening-pastel) 12%, var(--secondary));
+}
+
+[data-voice-controls]:has([data-voice-status="user"]) {
+  background-color: color-mix(in oklab, var(--voice-user-pastel) 17%, var(--secondary));
+}
+[data-voice-controls]:has([data-voice-status="assistant"]) {
+  background-color: color-mix(in oklab, var(--voice-assistant-pastel) 16%, var(--secondary));
+}
+[data-voice-controls]:has([data-voice-status="muted"]),
+[data-voice-controls]:has([data-voice-status="error"]) {
+  background-color: color-mix(in oklab, var(--color-red-400) 13%, var(--secondary));
+}
+[data-voice-controls]:has([data-voice-status="connecting"]) {
+  background-color: var(--secondary);
 }
 
 @utility surface-glass {
